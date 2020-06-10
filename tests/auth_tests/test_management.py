@@ -23,8 +23,8 @@ from django.test import TestCase, override_settings
 from django.utils.translation import gettext_lazy as _
 
 from .models import (
-    CustomUser, CustomUserNonUniqueUsername, CustomUserWithFK, Email,
-    UserProxy,
+    CustomUser, CustomUserNonUniqueUsername, CustomUserWithFK,
+    CustomUserWithM2M, Email, Organization, UserProxy,
 )
 
 MOCK_INPUT_KEY_TO_PROMPTS = {
@@ -310,13 +310,12 @@ class CreatesuperuserManagementCommandTestCase(TestCase):
         self.assertFalse(u.has_usable_password())
 
     def test_email_in_username(self):
-        new_io = StringIO()
         call_command(
             "createsuperuser",
             interactive=False,
             username="joe+admin@somewhere.org",
             email="joe@somewhere.org",
-            stdout=new_io
+            verbosity=0,
         )
         u = User._default_manager.get(username="joe+admin@somewhere.org")
         self.assertEqual(u.email, 'joe@somewhere.org')
@@ -421,8 +420,6 @@ class CreatesuperuserManagementCommandTestCase(TestCase):
         call_command(
             command,
             stdin=sentinel,
-            stdout=StringIO(),
-            stderr=StringIO(),
             interactive=False,
             verbosity=0,
             username='janet',
@@ -433,8 +430,6 @@ class CreatesuperuserManagementCommandTestCase(TestCase):
         command = createsuperuser.Command()
         call_command(
             command,
-            stdout=StringIO(),
-            stderr=StringIO(),
             interactive=False,
             verbosity=0,
             username='joe',
@@ -499,6 +494,87 @@ class CreatesuperuserManagementCommandTestCase(TestCase):
             self.assertEqual(u.group, group)
 
         test(self)
+
+    @override_settings(AUTH_USER_MODEL='auth_tests.CustomUserWithM2m')
+    def test_fields_with_m2m(self):
+        new_io = StringIO()
+        org_id_1 = Organization.objects.create(name='Organization 1').pk
+        org_id_2 = Organization.objects.create(name='Organization 2').pk
+        call_command(
+            'createsuperuser',
+            interactive=False,
+            username='joe',
+            orgs=[org_id_1, org_id_2],
+            stdout=new_io,
+        )
+        command_output = new_io.getvalue().strip()
+        self.assertEqual(command_output, 'Superuser created successfully.')
+        user = CustomUserWithM2M._default_manager.get(username='joe')
+        self.assertEqual(user.orgs.count(), 2)
+
+    @override_settings(AUTH_USER_MODEL='auth_tests.CustomUserWithM2M')
+    def test_fields_with_m2m_interactive(self):
+        new_io = StringIO()
+        org_id_1 = Organization.objects.create(name='Organization 1').pk
+        org_id_2 = Organization.objects.create(name='Organization 2').pk
+
+        @mock_inputs({
+            'password': 'nopasswd',
+            'Username: ': 'joe',
+            'Orgs (Organization.id): ': '%s, %s' % (org_id_1, org_id_2),
+        })
+        def test(self):
+            call_command(
+                'createsuperuser',
+                interactive=True,
+                stdout=new_io,
+                stdin=MockTTY(),
+            )
+            command_output = new_io.getvalue().strip()
+            self.assertEqual(command_output, 'Superuser created successfully.')
+            user = CustomUserWithM2M._default_manager.get(username='joe')
+            self.assertEqual(user.orgs.count(), 2)
+
+        test(self)
+
+    @override_settings(AUTH_USER_MODEL='auth_tests.CustomUserWithM2M')
+    def test_fields_with_m2m_interactive_blank(self):
+        new_io = StringIO()
+        org_id = Organization.objects.create(name='Organization').pk
+        entered_orgs = [str(org_id), ' ']
+
+        def return_orgs():
+            return entered_orgs.pop()
+
+        @mock_inputs({
+            'password': 'nopasswd',
+            'Username: ': 'joe',
+            'Orgs (Organization.id): ': return_orgs,
+        })
+        def test(self):
+            call_command(
+                'createsuperuser',
+                interactive=True,
+                stdout=new_io,
+                stderr=new_io,
+                stdin=MockTTY(),
+            )
+            self.assertEqual(
+                new_io.getvalue().strip(),
+                'Error: This field cannot be blank.\n'
+                'Superuser created successfully.',
+            )
+
+        test(self)
+
+    @override_settings(AUTH_USER_MODEL='auth_tests.CustomUserWithM2MThrough')
+    def test_fields_with_m2m_and_through(self):
+        msg = (
+            "Required field 'orgs' specifies a many-to-many relation through "
+            "model, which is not supported."
+        )
+        with self.assertRaisesMessage(CommandError, msg):
+            call_command('createsuperuser')
 
     def test_default_username(self):
         """createsuperuser uses a default username when one isn't provided."""
@@ -630,34 +706,26 @@ class CreatesuperuserManagementCommandTestCase(TestCase):
     def test_blank_username(self):
         """Creation fails if --username is blank."""
         new_io = StringIO()
-
-        def test(self):
-            with self.assertRaisesMessage(CommandError, 'Username cannot be blank.'):
-                call_command(
-                    'createsuperuser',
-                    username='',
-                    stdin=MockTTY(),
-                    stdout=new_io,
-                    stderr=new_io,
-                )
-
-        test(self)
+        with self.assertRaisesMessage(CommandError, 'Username cannot be blank.'):
+            call_command(
+                'createsuperuser',
+                username='',
+                stdin=MockTTY(),
+                stdout=new_io,
+                stderr=new_io,
+            )
 
     def test_blank_username_non_interactive(self):
         new_io = StringIO()
-
-        def test(self):
-            with self.assertRaisesMessage(CommandError, 'Username cannot be blank.'):
-                call_command(
-                    'createsuperuser',
-                    username='',
-                    interactive=False,
-                    stdin=MockTTY(),
-                    stdout=new_io,
-                    stderr=new_io,
-                )
-
-        test(self)
+        with self.assertRaisesMessage(CommandError, 'Username cannot be blank.'):
+            call_command(
+                'createsuperuser',
+                username='',
+                interactive=False,
+                stdin=MockTTY(),
+                stdout=new_io,
+                stderr=new_io,
+            )
 
     def test_password_validation_bypass(self):
         """
@@ -875,19 +943,15 @@ class CreatesuperuserManagementCommandTestCase(TestCase):
     @override_settings(AUTH_USER_MODEL='auth_tests.NoPasswordUser')
     def test_usermodel_without_password(self):
         new_io = StringIO()
-
-        def test(self):
-            call_command(
-                'createsuperuser',
-                interactive=False,
-                stdin=MockTTY(),
-                stdout=new_io,
-                stderr=new_io,
-                username='username',
-            )
-            self.assertEqual(new_io.getvalue().strip(), 'Superuser created successfully.')
-
-        test(self)
+        call_command(
+            'createsuperuser',
+            interactive=False,
+            stdin=MockTTY(),
+            stdout=new_io,
+            stderr=new_io,
+            username='username',
+        )
+        self.assertEqual(new_io.getvalue().strip(), 'Superuser created successfully.')
 
     @override_settings(AUTH_USER_MODEL='auth_tests.NoPasswordUser')
     def test_usermodel_without_password_interactive(self):
@@ -913,7 +977,7 @@ class CreatesuperuserManagementCommandTestCase(TestCase):
         'DJANGO_SUPERUSER_FIRST_NAME': 'ignored_first_name',
     })
     def test_environment_variable_non_interactive(self):
-        call_command('createsuperuser', interactive=False, stdout=StringIO())
+        call_command('createsuperuser', interactive=False, verbosity=0)
         user = User.objects.get(username='test_superuser')
         self.assertEqual(user.email, 'joe@somewhere.org')
         self.assertTrue(user.check_password('test_password'))
@@ -932,7 +996,7 @@ class CreatesuperuserManagementCommandTestCase(TestCase):
             interactive=False,
             username='cmd_superuser',
             email='cmd@somewhere.org',
-            stdout=StringIO(),
+            verbosity=0,
         )
         user = User.objects.get(username='cmd_superuser')
         self.assertEqual(user.email, 'cmd@somewhere.org')
@@ -953,7 +1017,7 @@ class CreatesuperuserManagementCommandTestCase(TestCase):
                 username='cmd_superuser',
                 email='cmd@somewhere.org',
                 stdin=MockTTY(),
-                stdout=StringIO(),
+                verbosity=0,
             )
             user = User.objects.get(username='cmd_superuser')
             self.assertEqual(user.email, 'cmd@somewhere.org')

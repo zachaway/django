@@ -3,7 +3,7 @@ import re
 import types
 from datetime import datetime, timedelta
 from decimal import Decimal
-from unittest import TestCase
+from unittest import TestCase, mock
 
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
@@ -222,6 +222,9 @@ TEST_DATA = [
     (URLValidator(EXTENDED_SCHEMES), 'git+ssh://git@github.com/example/hg-git.git', None),
 
     (URLValidator(EXTENDED_SCHEMES), 'git://-invalid.com', ValidationError),
+    (URLValidator(), None, ValidationError),
+    (URLValidator(), 56, ValidationError),
+    (URLValidator(), 'no_scheme', ValidationError),
     # Trailing newlines not accepted
     (URLValidator(), 'http://www.djangoproject.com/\n', ValidationError),
     (URLValidator(), 'http://[::ffff:192.9.5.5]\n', ValidationError),
@@ -424,6 +427,7 @@ class TestValidatorEquality(TestCase):
             MaxValueValidator(44),
             MaxValueValidator(44),
         )
+        self.assertEqual(MaxValueValidator(44), mock.ANY)
         self.assertNotEqual(
             MaxValueValidator(44),
             MinValueValidator(44),
